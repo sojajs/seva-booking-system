@@ -1,19 +1,238 @@
-import express from 'express';
-import cors from 'cors';
-import dotenv from 'dotenv';
+import express from "express";
+import pool from "../db.js";  // Make sure this path is correct
 
-// ✅ Make sure this import matches your file structure
-import bookingRoutes from './routes/bookingRoutes.js';  // If file is in routes folder
-// OR
-import bookingRoutes from './bookingRoutes.js';  // If file is in same folder
+const router = express.Router();
 
-dotenv.config();
+// GET all bookings
+router.get("/", async (req, res) => {
+    try {
+        console.log("📊 Fetching bookings from bookings table...");
+        
+        const [rows] = await pool.query(`
+            SELECT 
+                id,
+                sevakartha_name,
+                department,
+                seva_type,
+                pooja_date,
+                day,
+                month,
+                year,
+                status,
+                created_at
+            FROM bookings 
+            ORDER BY pooja_date ASC
+        `);
+        
+        console.log(`✅ Found ${rows.length} bookings`);
+        
+        const formatted = rows.map(item => {
+            let poojaDateStr = null;
+            if (item.pooja_date) {
+                if (item.pooja_date instanceof Date) {
+                    poojaDateStr = item.pooja_date.toISOString().split("T")[0];
+                } else if (typeof item.pooja_date === 'string') {
+                    poojaDateStr = item.pooja_date.split('T')[0];
+                }
+            }
+            
+            return {
+                id: item.id,
+                sevakartha_name: item.sevakartha_name,
+                department: item.department,
+                seva_type: item.seva_type,
+                pooja_date: poojaDateStr,
+                day: item.day,
+                month: item.month,
+                year: item.year,
+                status: item.status || 'booked',
+                created_at: item.created_at
+            };
+        });
 
-const app = express();
-app.use(cors());
-app.use(express.json());
+        res.json({
+            success: true,
+            count: formatted.length,
+            bookings: formatted,
+            timestamp: new Date().toISOString()
+        });
+        
+    } catch (err) {
+        console.error("❌ Database Fetch Error:", err);
+        res.status(500).json({ 
+            success: false,
+            message: "Failed to load bookings",
+            error: err.message
+        });
+    }
+});
 
-// Routes
-app.use('/api/bookings', bookingRoutes);
+// POST new booking
+router.post("/add", async (req, res) => {
+    try {
+        const { sevakartha_name, department, seva_type, pooja_date } = req.body;
+        
+        console.log("📝 New booking request:", req.body);
 
-// ... rest of your code
+        // Validation
+        if (!sevakartha_name || !department || !seva_type || !pooja_date) {
+            return res.status(400).json({
+                success: false,
+                error: "All fields are required"
+            });
+        }
+
+        // Parse date in UTC
+        const poojaDateUTC = new Date(pooja_date + 'T00:00:00Z');
+        
+        if (isNaN(poojaDateUTC.getTime())) {
+            return res.status(400).json({
+                success: false,
+                error: "Invalid date format. Use YYYY-MM-DD"
+            });
+        }
+
+        // Get today in UTC
+        const now = new Date();
+        const todayUTC = new Date(Date.UTC(
+            now.getUTCFullYear(),
+            now.getUTCMonth(),
+            now.getUTCDate()
+        ));
+
+        // Calculate 3 days before (EXACT rule)
+        const requiredBookingDate = new Date(poojaDateUTC);
+        requiredBookingDate.setUTCDate(poojaDateUTC.getUTCDate() - 3);
+
+        // EXACT 3-day rule
+        if (todayUTC.getTime() !== requiredBookingDate.getTime()) {
+            const allowedDate = requiredBookingDate.toISOString().split('T')[0];
+            return res.status(400).json({
+                success: false,
+                error: "❌ Booking is ONLY allowed exactly 3 days before the Pooja date",
+                details: {
+                    pooja_date: pooja_date,
+                    today: todayUTC.toISOString().split('T')[0],
+                    allowed_booking_date: allowedDate
+                }
+            });
+        }
+
+        // Check for existing booking
+        const [existing] = await pool.query(
+            "SELECT id, sevakartha_name FROM bookings WHERE pooja_date = ?",
+            [pooja_date]
+        );
+
+        if (existing.length > 0) {
+            return res.status(409).json({
+                success: false,
+                error: "❌ This date is already booked!",
+                booked_by: existing[0].sevakartha_name
+            });
+        }
+
+        // Get date parts
+        const day = poojaDateUTC.getUTCDate();
+        const month = poojaDateUTC.getUTCMonth() + 1;
+        const year = poojaDateUTC.getUTCFullYear();
+
+        // Insert booking
+        const [result] = await pool.query(
+            `INSERT INTO bookings 
+             (sevakartha_name, department, seva_type, pooja_date, day, month, year, status) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'booked')`,
+            [sevakartha_name, department, seva_type, pooja_date, day, month, year]
+        );
+
+        console.log("✅ Booking saved with ID:", result.insertId);
+
+        // Return the created booking
+        const [newRow] = await pool.query(
+            "SELECT * FROM bookings WHERE id = ?",
+            [result.insertId]
+        );
+
+        const booking = newRow[0];
+        
+        res.json({ 
+            success: true,
+            message: "✅ Seva booked successfully!",
+            booking_id: result.insertId,
+            booking: {
+                id: booking.id,
+                sevakartha_name: booking.sevakartha_name,
+                department: booking.department,
+                seva_type: booking.seva_type,
+                pooja_date: booking.pooja_date ? booking.pooja_date.toISOString().split('T')[0] : pooja_date,
+                day: booking.day,
+                month: booking.month,
+                year: booking.year,
+                status: booking.status || 'booked'
+            }
+        });
+
+    } catch (err) {
+        console.error("❌ Save error:", err);
+        res.status(500).json({ 
+            success: false,
+            error: "Database error",
+            details: err.message
+        });
+    }
+});
+
+// DELETE booking
+router.delete("/:id", async (req, res) => {
+    const { id } = req.params;
+    console.log(`🗑️ Delete request for booking ID: ${id}`);
+
+    try {
+        const [result] = await pool.query("DELETE FROM bookings WHERE id = ?", [id]);
+        
+        if (result.affectedRows === 0) {
+            return res.status(404).json({
+                success: false,
+                error: "Booking not found"
+            });
+        }
+        
+        console.log(`✅ Deleted ${result.affectedRows} booking(s)`);
+        
+        res.json({ 
+            success: true,
+            message: "✅ Booking deleted successfully",
+            deleted_id: id
+        });
+    } catch (err) {
+        console.error("❌ Delete Error:", err);
+        res.status(500).json({ 
+            success: false,
+            error: "Failed to delete booking",
+            details: err.message
+        });
+    }
+});
+
+// Health check for bookings route
+router.get("/health", async (req, res) => {
+    try {
+        const [result] = await pool.query("SELECT COUNT(*) as count FROM bookings");
+        res.json({
+            success: true,
+            database: "connected",
+            table: "bookings",
+            total_bookings: result[0].count,
+            timestamp: new Date().toISOString()
+        });
+    } catch (err) {
+        res.status(500).json({
+            success: false,
+            database: "disconnected",
+            error: err.message
+        });
+    }
+});
+
+// ✅ ONLY THIS EXPORT - NO SELF-IMPORT!
+export default router;
