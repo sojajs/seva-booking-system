@@ -1,70 +1,19 @@
-// GET all bookings - UPDATED to match your table structure
-router.get("/", async (req, res) => {
-    try {
-        console.log("📊 Fetching bookings from bookings table...");
-        
-        // Fetch with correct column names
-        const [rows] = await pool.query(`
-            SELECT 
-                id,
-                sevakartha_name,
-                department,
-                seva_type,
-                pooja_date,
-                day,
-                month,
-                year,
-                status,
-                created_at
-            FROM bookings 
-            ORDER BY pooja_date ASC
-        `);
-        
-        console.log(`✅ Found ${rows.length} bookings`);
-        
-        // Format dates properly
-        const formatted = rows.map(item => {
-            // Convert pooja_date to string format
-            let poojaDateStr = null;
-            if (item.pooja_date) {
-                if (item.pooja_date instanceof Date) {
-                    poojaDateStr = item.pooja_date.toISOString().split("T")[0];
-                } else if (typeof item.pooja_date === 'string') {
-                    poojaDateStr = item.pooja_date.split('T')[0];
-                }
-            }
-            
-            return {
-                id: item.id,
-                sevakartha_name: item.sevakartha_name,
-                department: item.department,
-                seva_type: item.seva_type,
-                pooja_date: poojaDateStr,
-                day: item.day,
-                month: item.month,
-                year: item.year,
-                status: item.status || 'booked',
-                created_at: item.created_at
-            };
-        });
+import express from 'express';
+import cors from 'cors';
+import dotenv from 'dotenv';
 
-        res.json({
-            success: true,
-            count: formatted.length,
-            bookings: formatted,
-            timestamp: new Date().toISOString()
-        });
-        
-    } catch (err) {
-        console.error("❌ Database Fetch Error:", err);
-        console.error("❌ SQL Error:", err.sql);
-        console.error("❌ Error details:", err.message);
-        
-        res.status(500).json({ 
-            success: false,
-            message: "Failed to load bookings",
-            error: err.message,
-            code: err.code
-        });
-    }
-});
+// ✅ Make sure this import matches your file structure
+import bookingRoutes from './routes/bookingRoutes.js';  // If file is in routes folder
+// OR
+import bookingRoutes from './bookingRoutes.js';  // If file is in same folder
+
+dotenv.config();
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// Routes
+app.use('/api/bookings', bookingRoutes);
+
+// ... rest of your code
